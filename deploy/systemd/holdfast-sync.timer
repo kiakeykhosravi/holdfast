@@ -1,0 +1,17 @@
+# holdfast-sync.timer — push new backups to S3 shortly after each backup.
+# The database host backs up at 00:00, 08:00 and 16:00; this fires 30
+# minutes later. A dump that takes longer than that is picked up by the next
+# tick, and syncing is idempotent, so firing more often is also fine:
+# change OnCalendar to "hourly" if you prefer.
+
+[Unit]
+Description=holdfast: sync to S3 every 8 hours
+
+[Timer]
+OnCalendar=*-*-* 00/8:30:00
+Persistent=true
+AccuracySec=1min
+Unit=holdfast-sync.service
+
+[Install]
+WantedBy=timers.target

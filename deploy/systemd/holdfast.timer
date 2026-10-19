@@ -1,0 +1,21 @@
+# holdfast.timer — run holdfast.service every 8 hours.
+# Fires at 00:00, 08:00 and 16:00 host local time. A run that is still
+# going when the next tick arrives is simply skipped by systemd (a oneshot
+# service that is active is not started again), and the tool's own run lock
+# guards the same case at the file level.
+
+[Unit]
+Description=holdfast: every 8 hours
+
+[Timer]
+OnCalendar=*-*-* 00/8:00:00
+# If the host was down at a tick, run once at boot instead of waiting up to
+# eight hours for the next one.
+Persistent=true
+# Spread load a little if several hosts share the schedule; harmless here.
+RandomizedDelaySec=5min
+AccuracySec=1min
+Unit=holdfast.service
+
+[Install]
+WantedBy=timers.target

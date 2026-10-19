@@ -1,0 +1,159 @@
+backup_dir: /var/backups/dbbackup
+
+# --- Storage ------------------------------------------------------------------
+# Where finished backups go: the archive, its .sha256 and its .meta.json.
+# Only this moves between backends. state_dir (run lock, parent-manifest
+# cache) and scratch_dir (staging) are local disk whatever you choose here.
+#
+#   primary: file   backup_dir above, on a local or mounted path (default)
+#   primary: s3     a bucket, or anything speaking the S3 API (MinIO, Ceph, R2)
+#   mirrors: [s3]   also write (and delete) everything there
+#
+# The primary is authoritative: reads, parent selection and retention
+# decisions come from it, and it behaves exactly as backup_dir always did.
+# A mirror is an offsite copy. If it fails, the run still completes on the
+# primary, the failure is printed, and the process exits 3 instead of 0 so
+# monitoring can tell "offsite copy is behind" from "no backup". The dump
+# runs at the speed of the slowest destination.
+#
+# Slow uplink on the database host? Leave mirrors empty there and run
+#   holdfast -config ... -sync-mirrors [-prune]
+# on the machine that serves backup_dir (the NFS server), with the same
+# backup_dir and mirrors: [s3] in its config. It copies whatever the bucket
+# lacks, verifies each archive against its .sha256 on the way, is safe to run
+# from cron, and needs no BACKUP_PASSPHRASE. -prune also deletes what the
+# primary no longer has, but refuses when the primary looks empty (an
+# unmounted share) or any sidecar there cannot be read.
+#
+# A host that serves several clusters' backup directories lists them as
+# sources and runs ONE process over all of them. Each source's objects land
+# under its own prefix (storage.s3.prefix + "/" + name), and validation
+# rejects two sources that would share a prefix, so -prune can never delete
+# another source's objects. -sync-mirrors covers every enabled source;
+# every other mode needs -source <name> when more than one is enabled.
+# Without a sources block, backup_dir above is the single implicit source.
+#
+# sources:
+#   - name: opb
+#     backup_dir: /nfs/data/opb_backups
+#   - name: pg
+#     backup_dir: /nfs/data/pg_backups
+#   - name: legacy
+#     backup_dir: /nfs/data/holdfast
+#     enabled: false          # skipped unless selected with -source legacy
+#     # prefix: old/holdfast  # optional override of the default (the name)
+#
+# With s3 as the primary, state_dir is required: the run lock cannot fall back
+# to backup_dir. Credentials: set S3_ACCESS_KEY_ID / S3_SECRET_ACCESS_KEY in
+# the environment, or leave both empty to use the AWS SDK default chain
+# (AWS_* variables, ~/.aws/config, an instance or pod role). Env overrides:
+# BACKUP_STORAGE (primary), BACKUP_STORAGE_MIRRORS (comma-separated),
+# S3_BUCKET, S3_PREFIX, S3_ENDPOINT, S3_REGION.
+#
+# Set a lifecycle rule on the bucket that aborts incomplete multipart uploads
+# after a day. A run killed mid-archive leaves one behind, invisible to
+# listing and billed for its parts; the tool's own sweep only sees uploads
+# older than 24h and only from a host that holds the run lock.
+storage:
+  primary: file
+  mirrors: []                  # e.g. [s3]
+  s3:
+    bucket: ""
+    prefix: ""                 # e.g. pg/prod
+    region: ""                 # required for AWS (the bucket's region, or AWS_REGION); defaults to us-east-1 with an endpoint
+    endpoint: ""               # e.g. https://s3.example.internal; empty for AWS
+    use_path_style: false      # true for most S3-compatibles
+    legacy_compat: false       # true if the server rejects x-amz-checksum headers
+    part_size_bytes: 0         # 0 = 64 MiB; caps an archive at 10000 parts
+    concurrency: 0             # 0 = 4 parts in flight; memory ~ part_size * concurrency
+
+# Retention is chain-safe: a chain is deleted whole, and only once its NEWEST
+# member has aged out, so an incremental can never be orphaned by its base
+# being pruned. The archive, its .sha256 and its .meta.json are removed
+# together; leaving the sidecar behind used to break parent resolution.
+#
+# Still not a GFS policy — there is no "keep 12 monthlies". Review this number
+# against your restore requirements rather than inheriting it.
+retention_days: 14
+run_on_cluster_role: replica
+max_replica_lag: 60s
+
+# logical-full | physical-full | physical-incremental
+# Override per run with -type, which is how one config file serves both a
+# logical schedule and a physical one.
+backup_type: logical-full
+
+# --- Exclusions -------------------------------------------------------------
+# These apply to LOGICAL backups only. Physical backups copy the data directory
+# block by block and always cover the entire cluster, so every rule below is
+# inert for physical-full and physical-incremental. The run logs a warning if
+# they are set and the type is physical.
+
+# Databases skipped entirely.
+exclude_dbs:
+  - template0
+  # - scratch_db
+
+# Per database: tables whose SCHEMA IS KEPT but whose DATA IS DROPPED.
+# Good for large regenerable tables — caches, materialised rollups, event logs.
+exclude_table_data:
+# myapp:
+#   - public.audit_log
+#   - public.session_cache
+
+# Per database: tables dropped entirely, schema and data.
+exclude_tables:
+# myapp:
+#   - public.tmp_import_staging
+
+# --- Physical backup / chains ------------------------------------------------
+
+# Disposable local state: the parent-manifest cache that lets an incremental run
+# without decrypting its parent archive. Losing it costs a decrypt, not a backup.
+state_dir: /var/lib/holdfast
+
+# Force a new full once a chain reaches this many members. Chain length is both
+# restore time and blast radius: one corrupt full destroys everything behind it.
+max_chain_length: 7
+
+# Turn an impossible incremental (aged-out WAL summaries, or a standby with no
+# new restartpoint) into a full backup rather than an error. A missed
+# incremental leaves you with no backup at all, which is worse than a big one.
+fallback_to_full: true
+
+# --- Tool paths --------------------------------------------------------------
+
+pg_dump_path: pg_dump
+pg_dumpall_path: pg_dumpall
+pg_basebackup_path: pg_basebackup
+pg_combinebackup_path: pg_combinebackup
+
+# Must match the source cluster's major version, and must be 17+ for
+# physical-incremental. This was postgres:16, which has neither --incremental
+# nor pg_combinebackup.
+pg_test_docker_image: postgres:18
+
+# Local staging. Physical backups need free space here for a full copy of the
+# cluster; validating a chain needs another full copy for pg_combinebackup.
+scratch_dir: /var/tmp/holdfast
+
+# dump_timeout bounds the WHOLE dump step of a run: for a logical backup that
+# is pg_dumpall plus every pg_dump together, not each database separately.
+# restore_timeout bounds the whole restore test, logical or physical.
+dump_timeout: 2h
+restore_timeout: 30m
+
+# The restore test for a physical backup boots the restored cluster with this
+# tool's own overrides (archive_mode off, shared_preload_libraries empty, ssl
+# off, a trust pg_hba.conf, small shared_buffers), never with the production
+# postgresql.conf, so it cannot run the primary's archive_command or fail on
+# extensions and certificates the test container does not have.
+enable_restore_test: true
+
+# Retention is configured at the top of this file.
+
+# pg_monitor (or superuser) is needed for the WAL lag checks.
+# REPLICATION is additionally required for physical backups via pg_basebackup.
+# summarize_wal must be on for physical-incremental:
+#   ALTER SYSTEM SET summarize_wal = on; SELECT pg_reload_conf();
+pg_conn_string: "postgres://backup_user:pass@host:5432/postgres"

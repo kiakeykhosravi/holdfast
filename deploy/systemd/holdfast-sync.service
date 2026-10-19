@@ -1,0 +1,60 @@
+# holdfast-sync.service — copy the NFS share to S3, verifying each archive.
+# NFS server. Started by holdfast-sync.timer.
+#
+# Install (NFS server):
+#   install -m 0755 holdfast /opt/holdfast/holdfast
+#   install -m 0640 -o root -g holdfast sync.yaml /etc/holdfast/sync.yaml
+#   install -m 0600 -o root -g root holdfast-sync.env /etc/holdfast/holdfast-sync.env
+#   cp holdfast-sync.service holdfast-sync.timer /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now holdfast-sync.timer
+#
+# One unit covers every backup directory on the share: list them as
+# `sources:` in sync.yaml and the run iterates them, one JSON result with a
+# `sources` array, one exit code. Exit 3 means some objects did not copy and
+# will be retried next run; alert if it persists. -prune removes from S3 what
+# the share no longer has, per source under its own prefix. It refuses to
+# prune when a directory looks empty (unmounted) or holds an unreadable
+# sidecar, so a missing mount cannot empty the bucket.
+
+[Unit]
+Description=holdfast: sync the backup share to S3
+Documentation=file:///opt/holdfast/README.md
+After=network-online.target
+Wants=network-online.target
+# If the exported tree is itself a mount on this host, uncomment:
+# RequiresMountsFor=/nfs/data
+
+[Service]
+Type=oneshot
+User=holdfast
+Group=holdfast
+
+# Contents: S3_ACCESS_KEY_ID=..., S3_SECRET_ACCESS_KEY=...
+# No passphrase: sync copies ciphertext.
+EnvironmentFile=/etc/holdfast/holdfast-sync.env
+
+ExecStart=/opt/holdfast/holdfast -config /etc/holdfast/sync.yaml -sync-mirrors -prune
+
+# A first sync of a full share over a slow link can take a long time; later
+# runs copy only what is new. The next timer tick is skipped while this is
+# still running, so a long run does not pile up.
+TimeoutStartSec=infinity
+KillSignal=SIGTERM
+TimeoutStopSec=5min
+
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+# Sync only reads the share, but the run lock lives in state_dir.
+ReadOnlyPaths=/nfs/data
+ReadWritePaths=/var/lib/holdfast
+StateDirectory=holdfast
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=holdfast-sync

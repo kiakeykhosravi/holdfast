@@ -1,0 +1,66 @@
+# holdfast.service — one logical full backup to the NFS share.
+# Database host (10.0.40.42). Started by holdfast.timer; never enable this
+# unit directly.
+#
+# Install:
+#   install -m 0755 holdfast /opt/holdfast/holdfast
+#   install -m 0640 -o root -g holdfast db.yaml /etc/holdfast/db.yaml
+#   install -m 0600 -o root -g root holdfast.env /etc/holdfast/holdfast.env
+#   cp holdfast.service holdfast.timer /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now holdfast.timer
+#
+# The service exits 0 on success or a healthy skip, 1 on failure, 2 on bad
+# config, 3 when the primary copy is complete but a mirror failed. systemd
+# records anything non-zero as failed, which is what you want to alert on:
+#   systemctl list-timers holdfast.timer
+#   journalctl -u holdfast.service -n 50
+
+[Unit]
+Description=holdfast: encrypted PostgreSQL backup to the NFS share
+Documentation=file:///opt/holdfast/README.md
+# The NFS mount must be there before we write into it.
+RequiresMountsFor=/mnt/nfs_51/opb_backups
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# A dedicated user that owns the share's backup directory and has pg_dump on
+# its PATH. Create it with: useradd -r -s /usr/sbin/nologin holdfast
+User=holdfast
+Group=holdfast
+
+# Secrets live here, mode 0600, root-owned; systemd reads it as root before
+# dropping privileges. Contents: BACKUP_PASSPHRASE=..., PG_CONN=...
+EnvironmentFile=/etc/holdfast/holdfast.env
+
+ExecStart=/opt/holdfast/holdfast -config /etc/holdfast/db.yaml
+
+# A logical dump of a large cluster can run for hours; the tool bounds the
+# dump itself with dump_timeout (4h in db.yaml). Give systemd a bit more so
+# it is the tool, not systemd, that reports a timeout.
+TimeoutStartSec=5h
+# If the host is shutting down, let the run finish cleanly rather than leave
+# a half-written temp file for the next run's sweep.
+KillSignal=SIGTERM
+TimeoutStopSec=10min
+
+# Resource hygiene: a backup must not starve the database.
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+
+# Hardening. Everything the tool writes is listed; the rest of the filesystem
+# is read-only to it.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/mnt/nfs_51/opb_backups /var/lib/holdfast /var/tmp/holdfast
+StateDirectory=holdfast
+# These must exist with the right owner before the first run:
+#   install -d -o holdfast -g holdfast -m 0750 /var/lib/holdfast /var/tmp/holdfast
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=holdfast
