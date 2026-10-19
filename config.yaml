@@ -75,6 +75,24 @@ storage:
 # Still not a GFS policy — there is no "keep 12 monthlies". Review this number
 # against your restore requirements rather than inheriting it.
 retention_days: 14
+
+# The floor under retention_days: the newest N chains are never deleted,
+# however old. Retention runs after every backup attempt, failed or not, so
+# without this a host whose dumps fail for longer than retention_days ends up
+# with no backups at all. 1 means "never delete the last chain". 0 turns the
+# floor off, which is an explicit statement that an empty backup_dir is an
+# acceptable outcome. Env override: MIN_CHAINS_KEPT.
+min_chains_kept: 1
+
+# Sidecars (.meta.json) are HMAC-signed with a key derived from the
+# passphrase. By default an UNSIGNED sidecar is still accepted, as one written
+# before signing existed — which means anyone who can edit a sidecar can also
+# delete its signature and be believed. Every backup run signs the legacy
+# sidecars it finds; once each host has run this version once, set this to
+# true and an unsigned sidecar becomes untrusted: parent selection ignores it,
+# retention and -sync-mirrors -prune refuse to delete while one exists, and
+# -retention-only needs BACKUP_PASSPHRASE to verify anything at all.
+require_signed_sidecars: false
 run_on_cluster_role: replica
 max_replica_lag: 60s
 

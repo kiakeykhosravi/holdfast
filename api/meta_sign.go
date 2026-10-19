@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -11,6 +12,7 @@ import (
 
 	"golang.org/x/crypto/scrypt"
 
+	"holdfast/interfaces"
 	"holdfast/types"
 )
 
@@ -64,6 +66,46 @@ func MetaKey(passphrase string) []byte {
 
 // metaKeyFor is the key a given config signs with.
 func metaKeyFor(cfg types.Config) []byte { return MetaKey(cfg.EncryptPassphrase) }
+
+// metaPolicyFor is how a given config trusts the sidecars it reads.
+func metaPolicyFor(cfg types.Config) MetaPolicy {
+	return MetaPolicy{Key: metaKeyFor(cfg), RequireSigned: cfg.RequireSignedSidecars}
+}
+
+// SignUnsignedSidecars rewrites, with a signature, every sidecar that parses
+// and validates but carries none, and returns how many it signed.
+//
+// This is the migration path to require_signed_sidecars. Sidecars written
+// before signing existed are accepted unsigned so that an upgrade does not
+// brick retention; but as long as "unsigned" is accepted, a signature proves
+// nothing, because an attacker who can edit a sidecar can also drop its
+// signature field. Signing the legacy ones on the next backup run — under the
+// run lock, with the passphrase in hand — closes that window, after which the
+// operator turns the requirement on.
+//
+// A sidecar in Skipped (unparseable, or signed and failing) is left alone:
+// signing it would launder exactly the tampering the signature exists to
+// catch. A nil key signs nothing.
+func SignUnsignedSidecars(ctx context.Context, store interfaces.Storer, key []byte) (int, error) {
+	if key == nil {
+		return 0, nil
+	}
+	scan, err := ReadAllMeta(ctx, store, key)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, m := range scan.Backups {
+		if m.Signature != "" {
+			continue
+		}
+		if err := WriteMeta(ctx, store, m, key); err != nil {
+			return n, fmt.Errorf("sign %s: %w", m.ID, err)
+		}
+		n++
+	}
+	return n, nil
+}
 
 // signMeta computes the signature for a sidecar.
 func signMeta(key []byte, m types.BackupMeta) string {

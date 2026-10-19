@@ -90,7 +90,11 @@ func (p *PostgresBackupDB) dumpPhysical(
 		args = append(args, "--incremental="+req.Parent.StatePath)
 	}
 
-	cctx, cancel := context.WithTimeout(ctx, p.cfg.DumpTimeout)
+	// withOptionalTimeout, not context.WithTimeout: dump_timeout: 0 means
+	// "no limit" everywhere else in this driver, and WithTimeout(ctx, 0) is a
+	// context that has already expired, which failed every physical backup
+	// on a host that had turned the limit off.
+	cctx, cancel := withOptionalTimeout(ctx, p.cfg.DumpTimeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(cctx, p.cfg.PGBaseBackupPath, args...)

@@ -165,11 +165,17 @@ different chain root. `WriteMeta` refuses to write anything that fails.
 (scrypt over the passphrase with a fixed salt, memoised) and stores an
 HMAC-SHA256 over the identity fields in `signature`. `ReadMeta` with a key
 refuses a sidecar whose signature does not verify; `ReadAllMeta` puts it in
-`Skipped`, which stops retention. A sidecar with no signature at all predates
-signing and is accepted, counted in `MetaScan.Unsigned`, and signed the next
-time it is rewritten. A nil key disables both signing and verification, which
-is what tests use and what a `-retention-only` run without a passphrase gets
-(with a warning).
+`Skipped`, which stops retention. A sidecar with no signature at all is, by
+default, accepted as predating signing and counted in `MetaScan.Unsigned`;
+`StartBackup` signs every such sidecar it finds (`SignUnsignedSidecars`), so
+one run per host is the migration. With `require_signed_sidecars: true`
+(`MetaPolicy.RequireSigned`) an unsigned sidecar is `Skipped` like a tampered
+one, and a scan with no key refuses outright (`ErrNoMetaKey`) rather than
+trusting everything — a sync host without the passphrase can copy but not
+prune. Until that flag is on, the signature only catches accidents: an
+attacker who can edit a sidecar can also drop the field. A nil key disables
+both signing and verification, which is what tests use and what a
+`-retention-only` run without a passphrase gets (with a warning).
 
 **The sidecar is unencrypted, so it must never contain schema information.**
 There is no `Entries` field for exactly this reason: for a logical backup the
@@ -273,10 +279,12 @@ which is worse than an unexpectedly large one.
 **Retention is chain-safe but is not a policy engine.** `CleanupRetention`
 groups by `ChainID`, deletes a chain only once its *newest* member has aged
 out, deletes whole chains rather than members, removes the archive, `.sha256`
-and `.meta.json` together, and refuses to run at all while any sidecar fails to
-parse. That removes the data-loss hazard — a full can no longer be pruned out
-from under its incrementals — but GFS is still not implemented: there is no
-"keep 12 monthlies", and no tiering.
+and `.meta.json` together, refuses to run at all while any sidecar fails to
+parse, and never deletes the newest `min_chains_kept` chains (default 1).
+That removes the two data-loss hazards — a full can no longer be pruned out
+from under its incrementals, and a run of failed nights can no longer age out
+the last good chain — but GFS is still not implemented: there is no "keep 12
+monthlies", and no tiering.
 
 The intended shape for that, still not built: a **pure** `Plan(backups, policy,
 now) (*RetentionPlan, error)` with no filesystem, clock, or config access, plus
@@ -314,6 +322,26 @@ Remaining gaps, in impact order:
    textfile format would be a small, high-value addition.
 
 ### Defects fixed, and the invariant each one protects
+
+Fourth pass (October 2026):
+
+- **Retention could delete the last backup.** It runs after every attempt,
+  succeeded or not, and had no floor: more failed nights than
+  `retention_days` left an empty directory with exit 1 every run.
+  `min_chains_kept` (default 1) keeps the newest N chains whatever their age;
+  the floor is positional, counted over live and expired chains alike, so
+  `RetentionPolicy` and `RetentionStats.ChainsKeptByFloor` make it visible.
+  `TestRetentionFloorNeverDeletesLastChain`.
+- **Sidecar signing was bypassable.** An unsigned sidecar was accepted as
+  pre-signing, so deleting the `signature` field made any edit trusted.
+  `StartBackup` now signs legacy sidecars, `require_signed_sidecars` makes an
+  unsigned one untrusted, and a strict scan without a key refuses rather than
+  trusting everything. `TestRequireSignedRefusesUnsignedSidecar`,
+  `TestSignUnsignedSidecars`.
+- **`dump_timeout: 0` failed every physical backup.** The physical path called
+  `context.WithTimeout` directly, where zero is "already expired"; the logical
+  path treated zero as unlimited. Both go through `withOptionalTimeout`.
+  `TestWithOptionalTimeoutZeroIsUnbounded`.
 
 Third pass (October 2026, with the storage seam, §10):
 

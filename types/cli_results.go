@@ -35,14 +35,18 @@ type ValidateOnlyResult struct {
 type RetentionResult struct {
 	Mode string `json:"mode"`
 	// Storage is where retention looked: a directory or an s3:// URL.
-	Storage        string    `json:"storage"`
-	RetentionDays  int       `json:"retentionDays"`
-	ChainsDeleted  int       `json:"chainsDeleted"`
-	BackupsDeleted int       `json:"backupsDeleted"`
-	FilesDeleted   int       `json:"filesDeleted"`
-	ChainsKept     int       `json:"chainsKept"`
-	OrphansDeleted int       `json:"orphansDeleted"`
-	CreatedAt      time.Time `json:"createdAt"`
+	Storage        string `json:"storage"`
+	RetentionDays  int    `json:"retentionDays"`
+	MinChainsKept  int    `json:"minChainsKept"`
+	ChainsDeleted  int    `json:"chainsDeleted"`
+	BackupsDeleted int    `json:"backupsDeleted"`
+	FilesDeleted   int    `json:"filesDeleted"`
+	ChainsKept     int    `json:"chainsKept"`
+	// ChainsKeptByFloor counts chains that had aged out but were kept because
+	// they are among the min_chains_kept newest.
+	ChainsKeptByFloor int       `json:"chainsKeptByFloor"`
+	OrphansDeleted    int       `json:"orphansDeleted"`
+	CreatedAt         time.Time `json:"createdAt"`
 }
 
 // SyncResult is the JSON printed after -sync-mirrors: one entry per source

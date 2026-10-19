@@ -82,9 +82,9 @@ regression even if every new feature works.
 
 - **No GFS.** No "keep 7 dailies, 4 weeklies, 12 monthlies, 3 yearlies".
   `retention_days` is the only knob.
-- **No minimum.** Nothing stops `retention_days: 1` plus a failed night from
-  deleting the last good backup. A `min_chains_kept` floor is the cheapest
-  safety the current code lacks.
+- ~~**No minimum.**~~ Done 2026-10-19: `min_chains_kept` (default 1) keeps
+  the newest N chains whatever their age; `RetentionPolicy` carries it and
+  `ChainsKeptByFloor` reports it. Keep it as the last rule in any `Plan`.
 - **No per-destination policy.** The bucket lives and dies with the primary.
   "Offsite keeps a year, local keeps two weeks" is impossible today, and
   faking it with a longer `retention_days` on the sync host is wrong,
@@ -217,5 +217,7 @@ Tests to write before the implementation, as tables over fixed `now`:
 3. Per-destination policy: §4.4 option 1 (two configs, no prune) or option 2
    (one config, plan per store)?
 4. Does `-dry-run` print the plan, or is it a separate flag?
-5. Should `-retention-only` require the passphrase so sidecar signatures are
-   verified, or keep today's "warn and proceed unsigned" behaviour?
+5. ~~Should `-retention-only` require the passphrase~~ Decided 2026-10-19:
+   `require_signed_sidecars: true` makes it refuse without one; off, it warns
+   and proceeds as before. `StartBackup` signs legacy sidecars so the flag can
+   be turned on after one run per host.

@@ -109,9 +109,7 @@ func (c Config) ValidateForMode(opts CLIOptions) map[string]string {
 	case RunModeRetentionOnly:
 		err := map[string]string{}
 		c.validateStorage(err)
-		if c.RetentionDays < 0 {
-			err["RetentionDays"] = "RetentionDays cannot be less than 0"
-		}
+		c.validateRetention(err)
 		return err
 
 	case RunModeDryRun:

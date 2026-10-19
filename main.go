@@ -354,6 +354,7 @@ func loadConfig(path string) (types.Config, error) {
 	cfg := types.Config{
 		BackupDir:           "/var/backups/dbbackup",
 		RetentionDays:       14,
+		MinChainsKept:       1,
 		RunOnClusterRole:    "replica",
 		MaxReplicaLag:       60 * time.Second,
 		PGDumpPath:          "pg_dump",
@@ -402,6 +403,13 @@ func loadConfig(path string) (types.Config, error) {
 			return types.Config{}, fmt.Errorf("RETENTION_DAYS=%d cannot be negative", n)
 		}
 		cfg.RetentionDays = n
+	}
+	if v := strings.TrimSpace(os.Getenv("MIN_CHAINS_KEPT")); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			return types.Config{}, fmt.Errorf("MIN_CHAINS_KEPT=%q must be a non-negative number", v)
+		}
+		cfg.MinChainsKept = n
 	}
 	if v := strings.TrimSpace(os.Getenv("BACKUP_TYPE")); v != "" {
 		bt, err := types.ParseBackupType(v)

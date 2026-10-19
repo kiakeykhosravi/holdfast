@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"time"
 
@@ -42,7 +43,27 @@ type RetentionStats struct {
 	BackupsDeleted int `json:"backupsDeleted"`
 	FilesDeleted   int `json:"filesDeleted"`
 	ChainsKept     int `json:"chainsKept"`
-	OrphansDeleted int `json:"orphansDeleted"`
+	// ChainsKeptByFloor is how many of ChainsKept had aged out and survive
+	// only because of MinChainsKept.
+	ChainsKeptByFloor int `json:"chainsKeptByFloor"`
+	OrphansDeleted    int `json:"orphansDeleted"`
+}
+
+// RetentionPolicy is what a cleanup pass needs to decide, separated from the
+// config so the decision can be exercised without one.
+type RetentionPolicy struct {
+	// Days is the age past which a chain may go. 0 disables retention.
+	Days int
+	// MinChainsKept is the number of newest chains that are never deleted,
+	// however old. 0 disables the floor.
+	MinChainsKept int
+	// Meta says how sidecars are trusted. Retention refuses to delete while
+	// any sidecar is untrusted under it.
+	Meta MetaPolicy
+}
+
+func retentionPolicyFor(cfg types.Config) RetentionPolicy {
+	return RetentionPolicy{Days: cfg.RetentionDays, MinChainsKept: cfg.MinChainsKept, Meta: metaPolicyFor(cfg)}
 }
 
 // RunRetention takes the run lock and runs a cleanup pass.
@@ -61,11 +82,11 @@ func RunRetention(ctx context.Context, cfg types.Config, store interfaces.Storer
 		return RetentionStats{}, fmt.Errorf("retention: cannot take the run lock: %w", err)
 	}
 	defer unlock()
-	return CleanupRetentionStats(ctx, store, cfg.RetentionDays, metaKeyFor(cfg))
+	return CleanupRetentionStats(ctx, store, retentionPolicyFor(cfg))
 }
 
-// CleanupRetentionStats deletes backup sets whose age exceeds days and reports
-// what it did. Callers that need the run lock go through RunRetention.
+// CleanupRetentionStats deletes backup sets whose age exceeds pol.Days and
+// reports what it did. Callers that need the run lock go through RunRetention.
 //
 // # Chain safety
 //
@@ -84,20 +105,30 @@ func RunRetention(ctx context.Context, cfg types.Config, store interfaces.Storer
 // backup, so parent resolution can select a tip whose archive no longer
 // exists, and chain validation can try to walk into a deleted ancestor.
 //
+// # The floor
+//
+// Age alone has a failure mode this tool used to share with every naive
+// retention script: retention runs after every backup attempt whether or not
+// the backup succeeded, so a host whose dumps fail for more nights than
+// retention_days ends up with no backups at all, every run exiting 1 and the
+// last good chain gone. MinChainsKept is the stop on that: the newest N chains
+// are kept whatever their age. The default is 1 — never delete the last
+// chain — and 0 is an explicit opt-out.
+//
 // # What this is not
 //
 // Not a GFS policy engine. There is no grandfather/father/son tiering, no
 // "keep N monthlies". Architecture.md §7 describes the pure
 // Plan(backups, policy, now) / Apply(plan) split that should replace this;
 // what follows is the safety floor, not that design.
-func CleanupRetentionStats(ctx context.Context, store interfaces.Storer, days int, key []byte) (RetentionStats, error) {
+func CleanupRetentionStats(ctx context.Context, store interfaces.Storer, pol RetentionPolicy) (RetentionStats, error) {
 	var stats RetentionStats
-	if days <= 0 {
+	if pol.Days <= 0 {
 		return stats, nil
 	}
-	cutoff := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
+	cutoff := time.Now().Add(-time.Duration(pol.Days) * 24 * time.Hour)
 
-	scan, err := ReadAllMeta(ctx, store, key)
+	scan, err := ReadAllMetaWith(ctx, store, pol.Meta)
 	if err != nil {
 		return stats, fmt.Errorf("retention: cannot read backup metadata: %w", err)
 	}
@@ -122,12 +153,33 @@ func CleanupRetentionStats(ctx context.Context, store interfaces.Storer, days in
 		described[m.EncryptedFile] = true
 	}
 
-	for chainID, members := range scan.Chains() {
-		// Backups is oldest-first, and Chains preserves that ordering, so the
-		// last member is the newest.
-		newest := members[len(members)-1]
+	// Chains newest-first by their newest member, so the floor can be read
+	// off the position: the first MinChainsKept chains are untouchable.
+	chains := scan.Chains()
+	order := make([]string, 0, len(chains))
+	for id := range chains {
+		order = append(order, id)
+	}
+	sort.Slice(order, func(i, j int) bool {
+		a, b := newestMember(chains[order[i]]), newestMember(chains[order[j]])
+		if a.CreatedAt.Equal(b.CreatedAt) {
+			return order[i] > order[j]
+		}
+		return a.CreatedAt.After(b.CreatedAt)
+	})
+
+	for rank, chainID := range order {
+		members := chains[chainID]
+		newest := newestMember(members)
 		if !newest.CreatedAt.Before(cutoff) {
 			stats.ChainsKept++
+			continue
+		}
+		if rank < pol.MinChainsKept {
+			log.Printf("[retention] keeping chain %s although its newest member (%s) has aged out: it is among the %d newest chain(s) (min_chains_kept)",
+				chainID, newest.CreatedAt.Format(time.RFC3339), pol.MinChainsKept)
+			stats.ChainsKept++
+			stats.ChainsKeptByFloor++
 			continue
 		}
 
@@ -139,6 +191,9 @@ func CleanupRetentionStats(ctx context.Context, store interfaces.Storer, days in
 			stats.BackupsDeleted++
 		}
 		stats.ChainsDeleted++
+	}
+	if len(order) > 0 && stats.ChainsDeleted == len(order) {
+		log.Printf("[retention] WARNING: every chain in %s had aged out and min_chains_kept is 0, so no described backup remains", store.Location())
 	}
 
 	// Archives with no sidecar: pre-sidecar backups, or a run that died between
@@ -195,6 +250,9 @@ func CleanupRetentionStats(ctx context.Context, store interfaces.Storer, days in
 	return stats, nil
 }
 
+// newestMember is the last of an oldest-first chain.
+func newestMember(members []types.BackupMeta) types.BackupMeta { return members[len(members)-1] }
+
 // removeBackupSet deletes one backup's archive, checksum and sidecar, and
 // reports how many objects actually went away.
 //
@@ -225,14 +283,16 @@ func RunRetentionOnly(ctx context.Context, cfg types.Config, store interfaces.St
 		return nil, err
 	}
 	return &types.RetentionResult{
-		Mode:           string(types.RunModeRetentionOnly),
-		Storage:        store.Location(),
-		RetentionDays:  cfg.RetentionDays,
-		ChainsDeleted:  stats.ChainsDeleted,
-		BackupsDeleted: stats.BackupsDeleted,
-		FilesDeleted:   stats.FilesDeleted,
-		ChainsKept:     stats.ChainsKept,
-		OrphansDeleted: stats.OrphansDeleted,
-		CreatedAt:      time.Now(),
+		Mode:              string(types.RunModeRetentionOnly),
+		Storage:           store.Location(),
+		RetentionDays:     cfg.RetentionDays,
+		MinChainsKept:     cfg.MinChainsKept,
+		ChainsDeleted:     stats.ChainsDeleted,
+		BackupsDeleted:    stats.BackupsDeleted,
+		FilesDeleted:      stats.FilesDeleted,
+		ChainsKept:        stats.ChainsKept,
+		ChainsKeptByFloor: stats.ChainsKeptByFloor,
+		OrphansDeleted:    stats.OrphansDeleted,
+		CreatedAt:         time.Now(),
 	}, nil
 }

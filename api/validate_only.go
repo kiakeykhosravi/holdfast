@@ -79,7 +79,7 @@ func ValidateEncryptedBackup(ctx context.Context, cfg types.Config, store interf
 	}
 	defer os.RemoveAll(workdir)
 
-	meta, synthesized, err := metaForValidation(ctx, store, name, key)
+	meta, synthesized, err := metaForValidation(ctx, store, name, key, cfg.RequireSignedSidecars)
 	if err != nil {
 		return nil, err
 	}
@@ -158,16 +158,19 @@ func detectMedium(files []string) types.Medium {
 // caller must correct it from the archive's contents rather than trust it,
 // since a physical archive can also reach here.
 //
-// An unsigned sidecar is accepted: it predates signing, and the point of this
-// mode is to prove such a backup restorable. A sidecar whose signature does
-// not verify is refused; recording a verdict against a chain description that
-// has been tampered with would launder it.
-func metaForValidation(ctx context.Context, store interfaces.Storer, name string, key []byte) (types.BackupMeta, bool, error) {
+// An unsigned sidecar is accepted unless requireSigned is set: it predates
+// signing, and the point of this mode is to prove such a backup restorable. A
+// sidecar whose signature does not verify is refused; recording a verdict
+// against a chain description that has been tampered with would launder it.
+func metaForValidation(ctx context.Context, store interfaces.Storer, name string, key []byte, requireSigned bool) (types.BackupMeta, bool, error) {
 	id := idFromArchiveName(name)
 
 	meta, err := ReadMeta(ctx, store, types.MetaFileName(id), key)
-	if err == nil || errors.Is(err, ErrMetaUnsigned) {
+	if err == nil || (errors.Is(err, ErrMetaUnsigned) && !requireSigned) {
 		return meta, false, nil
+	}
+	if errors.Is(err, ErrMetaUnsigned) {
+		return types.BackupMeta{}, false, fmt.Errorf("%w; a backup run signs legacy sidecars, or set require_signed_sidecars: false for this host", err)
 	}
 	if !errors.Is(err, types.ErrObjectNotExist) {
 		return types.BackupMeta{}, false, err

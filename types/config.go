@@ -76,31 +76,45 @@ type SourceConfig struct {
 func (s SourceConfig) IsEnabled() bool { return s.Enabled == nil || *s.Enabled }
 
 type Config struct {
-	BackupDir           string              `yaml:"backup_dir"`
-	Storage             StorageConfig       `yaml:"storage"`
-	Sources             []SourceConfig      `yaml:"sources"`
-	BackupType          BackupType          `yaml:"backup_type"`
-	StateDir            string              `yaml:"state_dir"`
-	MaxChainLength      int                 `yaml:"max_chain_length"`
-	RetentionDays       int                 `yaml:"retention_days"`
-	FallbackToFull      bool                `yaml:"fallback_to_full"`
-	EncryptPassphrase   string              `yaml:"encrypt_passphrase"`
-	RunOnClusterRole    string              `yaml:"run_on_cluster_role"`
-	MaxReplicaLag       time.Duration       `yaml:"max_replica_lag"`
-	PGConnString        string              `yaml:"pg_conn_string"`
-	PGDumpPath          string              `yaml:"pg_dump_path"`
-	PGDumpAllPath       string              `yaml:"pg_dumpall_path"`
-	PGTestDockerImage   string              `yaml:"pg_test_docker_image"`
-	PGBaseBackupPath    string              `yaml:"pg_basebackup_path"`
-	PGCombineBackupPath string              `yaml:"pg_combinebackup_path"`
-	DumpTimeout         time.Duration       `yaml:"dump_timeout"`
-	RestoreTimeout      time.Duration       `yaml:"restore_timeout"`
-	EnableRestoreTest   bool                `yaml:"enable_restore_test"`
-	ExcludeDBs          []string            `yaml:"exclude_dbs"`
-	ExcludeTableData    map[string][]string `yaml:"exclude_table_data"`
-	ExcludeTables       map[string][]string `yaml:"exclude_tables"`
-	ScratchDir          string              `yaml:"scratch_dir"`
-	ValidationDataDir   string              `yaml:"validation_data_dir"`
+	BackupDir      string         `yaml:"backup_dir"`
+	Storage        StorageConfig  `yaml:"storage"`
+	Sources        []SourceConfig `yaml:"sources"`
+	BackupType     BackupType     `yaml:"backup_type"`
+	StateDir       string         `yaml:"state_dir"`
+	MaxChainLength int            `yaml:"max_chain_length"`
+	RetentionDays  int            `yaml:"retention_days"`
+	// MinChainsKept is the floor under retention: the newest N chains are
+	// never deleted, however old. It is what stops a run of failed nights
+	// from ageing out the last good backup. 0 disables the floor and is an
+	// explicit statement that "delete everything once it has aged out" is
+	// acceptable.
+	MinChainsKept int `yaml:"min_chains_kept"`
+	// RequireSignedSidecars makes an unsigned sidecar untrusted, the same as
+	// one whose signature does not verify: parent selection ignores it and
+	// retention and prune refuse to run. Off, an unsigned sidecar is accepted
+	// as one written before signing existed, which an attacker with write
+	// access to backup_dir can imitate by deleting the signature field. Turn
+	// it on once every host has run a backup with this version, which signs
+	// every legacy sidecar it finds.
+	RequireSignedSidecars bool                `yaml:"require_signed_sidecars"`
+	FallbackToFull        bool                `yaml:"fallback_to_full"`
+	EncryptPassphrase     string              `yaml:"encrypt_passphrase"`
+	RunOnClusterRole      string              `yaml:"run_on_cluster_role"`
+	MaxReplicaLag         time.Duration       `yaml:"max_replica_lag"`
+	PGConnString          string              `yaml:"pg_conn_string"`
+	PGDumpPath            string              `yaml:"pg_dump_path"`
+	PGDumpAllPath         string              `yaml:"pg_dumpall_path"`
+	PGTestDockerImage     string              `yaml:"pg_test_docker_image"`
+	PGBaseBackupPath      string              `yaml:"pg_basebackup_path"`
+	PGCombineBackupPath   string              `yaml:"pg_combinebackup_path"`
+	DumpTimeout           time.Duration       `yaml:"dump_timeout"`
+	RestoreTimeout        time.Duration       `yaml:"restore_timeout"`
+	EnableRestoreTest     bool                `yaml:"enable_restore_test"`
+	ExcludeDBs            []string            `yaml:"exclude_dbs"`
+	ExcludeTableData      map[string][]string `yaml:"exclude_table_data"`
+	ExcludeTables         map[string][]string `yaml:"exclude_tables"`
+	ScratchDir            string              `yaml:"scratch_dir"`
+	ValidationDataDir     string              `yaml:"validation_data_dir"`
 }
 
 // PrimaryStorage is the authoritative backend, defaulting to file.
@@ -288,12 +302,21 @@ func (c Config) ForSource(src SourceConfig) Config {
 	return out
 }
 
-func (c Config) Validate() map[string]string {
-	errs := map[string]string{}
-	c.validateStorage(errs)
+// validateRetention checks the retention knobs shared by every mode that
+// can delete.
+func (c Config) validateRetention(errs map[string]string) {
 	if c.RetentionDays < 0 {
 		errs["RetentionDays"] = "RetentionDays cannot be less than 0"
 	}
+	if c.MinChainsKept < 0 {
+		errs["MinChainsKept"] = "min_chains_kept cannot be less than 0"
+	}
+}
+
+func (c Config) Validate() map[string]string {
+	errs := map[string]string{}
+	c.validateStorage(errs)
+	c.validateRetention(errs)
 	if err := c.BackupType.Validate(); err != nil {
 		errs["BackupType"] = err.Error()
 	}

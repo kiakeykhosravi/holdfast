@@ -148,7 +148,7 @@ func TestResolveLineageDetectsCycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := resolveLineage(context.Background(), st, nil, leaf); err == nil {
+	if _, err := resolveLineage(context.Background(), st, MetaPolicy{}, leaf); err == nil {
 		t.Fatal("expected a cycle to be reported rather than looping")
 	}
 }
@@ -164,7 +164,7 @@ func TestResolveLineageReportsMissingAncestor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = resolveLineage(context.Background(), st, nil, leaf)
+	_, err = resolveLineage(context.Background(), st, MetaPolicy{}, leaf)
 	if err == nil {
 		t.Fatal("expected a missing-parent error")
 	}

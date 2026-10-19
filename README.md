@@ -59,7 +59,7 @@ where `EnvironmentFile` supplies them. A missing S3 key fails at startup
 with exit 2 and a message saying so.
 
 Other overrides: `BACKUP_DIR`, `STATE_DIR`, `SCRATCH_DIR`, `BACKUP_TYPE`,
-`RETENTION_DAYS`, `RUN_ON_ROLE`, `MAX_REPLICA_LAG_SECONDS`,
+`RETENTION_DAYS`, `MIN_CHAINS_KEPT`, `RUN_ON_ROLE`, `MAX_REPLICA_LAG_SECONDS`,
 `ENABLE_RESTORE_TEST`, `BACKUP_STORAGE`, `BACKUP_STORAGE_MIRRORS`,
 `S3_BUCKET`, `S3_PREFIX`, `S3_ENDPOINT`, `S3_REGION` (or `AWS_REGION`).
 
@@ -244,14 +244,20 @@ than the schedule interval.
 Age-based and chain-safe, not GFS. A chain (a full and the incrementals built
 on it) is kept whole until its **newest** member is older than
 `retention_days`, then the whole chain is deleted, archive, checksum and
-sidecar together. Retention refuses to run while any sidecar is unreadable or
-fails its signature, because an unreadable sidecar describes a backup whose
-dependents are unknown. `retention_days: 0` disables it.
+sidecar together. The newest `min_chains_kept` chains (default 1) are never
+deleted, however old: retention runs after every backup attempt, failed or
+not, and without the floor a run of failed nights longer than `retention_days`
+would delete the last good backup. Retention refuses to run while any sidecar
+is unreadable or fails its signature, because an unreadable sidecar describes
+a backup whose dependents are unknown. `retention_days: 0` disables it;
+`min_chains_kept: 0` disables the floor.
 
 Consequences:
 
-- `retention_days` is the only knob. With daily incrementals and
-  `max_chain_length: 7`, a chain lives roughly a week past that number.
+- `retention_days` and `min_chains_kept` are the only knobs. With daily
+  incrementals and `max_chain_length: 7`, a chain lives roughly a week past
+  that number. The result JSON reports `chainsKeptByFloor`; a non-zero value
+  that persists means backups have stopped succeeding.
 - There is no "keep one full per month". See `docs/retention-handoff.md`.
 - Deletions reach S3 in one of two ways: retention running on a host whose
   config lists `mirrors: [s3]` (immediate), or `-sync-mirrors -prune` on the
@@ -259,6 +265,23 @@ Consequences:
 - S3 has no retention of its own. Do not try to give it a longer life with a
   different `retention_days` on the sync host: `-prune` follows the primary,
   so that would delete from the bucket on the NFS server's schedule.
+
+## Sidecar signatures
+
+Every sidecar is signed with a key derived from `BACKUP_PASSPHRASE`. A
+sidecar whose signature does not verify is untrusted: parent selection skips
+it and anything that deletes refuses to run. An **unsigned** sidecar is, by
+default, accepted as one written before signing existed. That default is a
+hole: whoever can edit a sidecar can also delete its `signature` field. Close
+it in two steps:
+
+1. Upgrade every host and let each run one backup. The run signs every
+   unsigned sidecar it finds and logs how many.
+2. Set `require_signed_sidecars: true`. From then on an unsigned sidecar is
+   treated like a tampered one, and `-retention-only` and
+   `-sync-mirrors -prune` refuse to delete unless they can verify, which on
+   a sync host without the passphrase means prune is off (copying still
+   works).
 
 ## First run checklist
 

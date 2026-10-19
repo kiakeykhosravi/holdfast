@@ -3,8 +3,8 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"os"
 	"holdfast/types"
+	"os"
 	"testing"
 	"time"
 )
@@ -63,7 +63,7 @@ func TestTamperedSidecarIsSkipped(t *testing.T) {
 	if len(scan.Backups) != 0 || len(scan.Skipped) != 1 {
 		t.Fatalf("tampered sidecar should be Skipped, got backups=%d skipped=%d", len(scan.Backups), len(scan.Skipped))
 	}
-	if _, err := CleanupRetentionStats(ctx, st, 14, key); err == nil {
+	if _, err := CleanupRetentionStats(ctx, st, RetentionPolicy{Days: 14, Meta: MetaPolicy{Key: key}}); err == nil {
 		t.Fatal("retention ran with a tampered sidecar in the directory")
 	}
 }

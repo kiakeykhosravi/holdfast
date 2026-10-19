@@ -185,3 +185,18 @@ func TestSelectSourcesAndForSource(t *testing.T) {
 		t.Fatal("-source accepted with no sources configured")
 	}
 }
+
+func TestRetentionValidation(t *testing.T) {
+	c := baseConfig()
+	c.MinChainsKept = -1
+	if errs := c.Validate(); errs["MinChainsKept"] == "" {
+		t.Fatal("negative min_chains_kept accepted by Validate")
+	}
+	if errs := c.ValidateForMode(CLIOptions{Mode: RunModeRetentionOnly}); errs["MinChainsKept"] == "" {
+		t.Fatal("negative min_chains_kept accepted in retention-only mode")
+	}
+	c.MinChainsKept = 0
+	if errs := c.Validate(); errs["MinChainsKept"] != "" {
+		t.Fatalf("min_chains_kept: 0 is the explicit opt-out and must validate: %v", errs)
+	}
+}

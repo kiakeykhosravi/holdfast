@@ -56,7 +56,7 @@ func TestRetentionKeepsChainWithLiveTip(t *testing.T) {
 	base := writeBackupSet(t, dir, "2026-01-01_00-00-00", "", "2026-01-01_00-00-00", types.PhysicalFull, 30*24*time.Hour)
 	tip := writeBackupSet(t, dir, "2026-01-28_00-00-00", base.ID, base.ID, types.PhysicalIncremental, 1*time.Hour)
 
-	stats, err := CleanupRetentionStats(context.Background(), newTestStore(t, dir), 14, nil)
+	stats, err := CleanupRetentionStats(context.Background(), newTestStore(t, dir), RetentionPolicy{Days: 14})
 	if err != nil {
 		t.Fatalf("CleanupRetentionStats: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestRetentionDeletesWholeExpiredChain(t *testing.T) {
 	base := writeBackupSet(t, dir, "2026-01-01_00-00-00", "", "2026-01-01_00-00-00", types.PhysicalFull, 60*24*time.Hour)
 	mid := writeBackupSet(t, dir, "2026-01-02_00-00-00", base.ID, base.ID, types.PhysicalIncremental, 59*24*time.Hour)
 
-	stats, err := CleanupRetentionStats(context.Background(), newTestStore(t, dir), 14, nil)
+	stats, err := CleanupRetentionStats(context.Background(), newTestStore(t, dir), RetentionPolicy{Days: 14})
 	if err != nil {
 		t.Fatalf("CleanupRetentionStats: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestRetentionRefusesWhenASidecarIsUnreadable(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := CleanupRetentionStats(context.Background(), newTestStore(t, dir), 14, nil); err == nil {
+	if _, err := CleanupRetentionStats(context.Background(), newTestStore(t, dir), RetentionPolicy{Days: 14}); err == nil {
 		t.Fatal("expected retention to refuse to run while a sidecar is unreadable")
 	}
 	if !exists(t, filepath.Join(dir, old.EncryptedFile)) {
@@ -135,7 +135,7 @@ func TestRetentionDeletesUndescribedArchives(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stats, err := CleanupRetentionStats(context.Background(), newTestStore(t, dir), 1, nil)
+	stats, err := CleanupRetentionStats(context.Background(), newTestStore(t, dir), RetentionPolicy{Days: 1})
 	if err != nil {
 		t.Fatalf("CleanupRetentionStats: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestRetentionDeletesUndescribedArchives(t *testing.T) {
 func TestRetentionZeroDaysIsANoOp(t *testing.T) {
 	dir := t.TempDir()
 	m := writeBackupSet(t, dir, "2020-01-01_00-00-00", "", "2020-01-01_00-00-00", types.LogicalFull, 5000*24*time.Hour)
-	if _, err := CleanupRetentionStats(context.Background(), newTestStore(t, dir), 0, nil); err != nil {
+	if _, err := CleanupRetentionStats(context.Background(), newTestStore(t, dir), RetentionPolicy{Days: 0}); err != nil {
 		t.Fatal(err)
 	}
 	if !exists(t, filepath.Join(dir, m.EncryptedFile)) {

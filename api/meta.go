@@ -159,20 +159,47 @@ func (s MetaScan) Lineage(leaf types.BackupMeta) ([]types.BackupMeta, error) {
 	return lineage, nil
 }
 
-// ReadAllMeta loads every backup_*.meta.json in the store.
+// MetaPolicy says how far a sidecar is trusted when it is read.
+type MetaPolicy struct {
+	// Key verifies signatures. nil disables verification entirely, which is
+	// what tests and a passphrase-less host get.
+	Key []byte
+
+	// RequireSigned treats an unsigned sidecar as untrusted (Skipped) instead
+	// of accepting it as one written before signing existed. Without it the
+	// signature is only a tamper seal against accidents: anyone who can write
+	// the file can also delete the signature field and be believed. It needs
+	// a Key; with none there is nothing to verify against, and a scan refuses
+	// rather than quietly trusting everything.
+	RequireSigned bool
+}
+
+// ErrNoMetaKey is returned when RequireSigned is set and no key is available.
+var ErrNoMetaKey = errors.New("require_signed_sidecars is set but no passphrase is available to verify them")
+
+// ReadAllMeta loads every backup_*.meta.json in the store, verifying with key
+// when it is non-nil and accepting unsigned sidecars. See ReadAllMetaWith.
+func ReadAllMeta(ctx context.Context, store interfaces.Storer, key []byte) (MetaScan, error) {
+	return ReadAllMetaWith(ctx, store, MetaPolicy{Key: key})
+}
+
+// ReadAllMetaWith loads every backup_*.meta.json in the store under pol.
 //
 // A sidecar that fails to parse or validate is recorded in Skipped rather than
 // failing the scan, so one corrupt sidecar cannot block a backup run. It is the
 // caller's decision what to do about it — a backup can proceed, a deletion pass
 // should not.
 //
-// key is the sidecar signing key, or nil to skip verification. A sidecar with
-// a signature that does not verify is Skipped. One with no signature at all is
-// accepted and counted in Unsigned, because every sidecar written before
-// signing existed looks like that and refusing them would brick retention on
-// upgrade.
-func ReadAllMeta(ctx context.Context, store interfaces.Storer, key []byte) (MetaScan, error) {
+// A sidecar with a signature that does not verify is Skipped. One with no
+// signature at all is accepted and counted in Unsigned unless pol.RequireSigned
+// is set, because every sidecar written before signing existed looks like that
+// and refusing them by default would brick retention on upgrade. StartBackup
+// signs them, after which require_signed_sidecars can be turned on.
+func ReadAllMetaWith(ctx context.Context, store interfaces.Storer, pol MetaPolicy) (MetaScan, error) {
 	var scan MetaScan
+	if pol.RequireSigned && pol.Key == nil {
+		return scan, ErrNoMetaKey
+	}
 
 	objs, err := store.List(ctx, objectPrefix)
 	if err != nil {
@@ -183,24 +210,28 @@ func ReadAllMeta(ctx context.Context, store interfaces.Storer, key []byte) (Meta
 		if !isMetaName(o.Name) {
 			continue
 		}
-		meta, err := ReadMeta(ctx, store, o.Name, key)
+		meta, err := ReadMeta(ctx, store, o.Name, pol.Key)
 		if err != nil {
 			if !errors.Is(err, ErrMetaUnsigned) {
 				scan.Skipped = append(scan.Skipped, SkippedMeta{Name: o.Name, Err: err})
+				continue
+			}
+			if pol.RequireSigned {
+				scan.Skipped = append(scan.Skipped, SkippedMeta{Name: o.Name, Err: fmt.Errorf("%w (require_signed_sidecars is on)", err)})
 				continue
 			}
 			scan.Unsigned++
 		}
 		scan.Backups = append(scan.Backups, meta)
 	}
-	if key == nil {
+	if pol.Key == nil {
 		scan.Unsigned = len(scan.Backups)
 	}
 	if scan.Unsigned > 0 && len(scan.Backups) > 0 {
-		if key == nil {
+		if pol.Key == nil {
 			log.Printf("[meta] WARNING: %d sidecar(s) read without signature verification (no passphrase available)", scan.Unsigned)
 		} else {
-			log.Printf("[meta] %d of %d sidecar(s) are unsigned (written before signing existed); they will be signed the next time they are rewritten", scan.Unsigned, len(scan.Backups))
+			log.Printf("[meta] %d of %d sidecar(s) are unsigned; the next backup run signs them, and require_signed_sidecars: true then makes an unsigned sidecar untrusted", scan.Unsigned, len(scan.Backups))
 		}
 	}
 

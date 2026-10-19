@@ -141,7 +141,7 @@ func syncSource(ctx context.Context, cfg types.Config, src SyncSource, opts Sync
 		case len(have) == 0:
 			sr.PruneRefused = fmt.Sprintf("refusing to prune: %s lists no backup objects at all, which is what an unmounted backup_dir looks like", primary.Location())
 		default:
-			scan, err := ReadAllMeta(ctx, primary, metaKeyFor(cfg))
+			scan, err := ReadAllMetaWith(ctx, primary, metaPolicyFor(cfg))
 			if err != nil {
 				sr.PruneRefused = fmt.Sprintf("refusing to prune: cannot read primary sidecars: %v", err)
 			} else if scan.HasSkipped() {

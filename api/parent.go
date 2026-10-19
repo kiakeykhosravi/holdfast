@@ -46,7 +46,7 @@ func SelectParentMeta(ctx context.Context, cfg types.Config, store interfaces.St
 		return zero, false, nil
 	}
 
-	scan, err := ReadAllMeta(ctx, store, metaKeyFor(cfg))
+	scan, err := ReadAllMetaWith(ctx, store, metaPolicyFor(cfg))
 	if err != nil {
 		return zero, false, fmt.Errorf("cannot read backup metadata from %s: %w", store.Location(), err)
 	}

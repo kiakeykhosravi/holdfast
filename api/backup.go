@@ -119,6 +119,19 @@ func StartBackup(
 
 	key := metaKeyFor(cfg)
 
+	// Sign any sidecar that predates signing. Done here, under the lock and
+	// with the passphrase available, so that one backup run per host is the
+	// whole migration to require_signed_sidecars. Skipped once that flag is
+	// on, since an unsigned sidecar is then untrusted and must not be
+	// laundered into a signed one.
+	if key != nil && !cfg.RequireSignedSidecars {
+		if n, err := SignUnsignedSidecars(ctx, store, key); err != nil {
+			log.Printf("WARNING: could not sign legacy sidecars in %s: %v", store.Location(), err)
+		} else if n > 0 {
+			log.Printf("[meta] signed %d legacy sidecar(s) in %s; set require_signed_sidecars: true once every host has run this version", n, store.Location())
+		}
+	}
+
 	// 1. Which backup, and on which parent. Sidecars only; the parent archive
 	// is not opened until preflight has agreed this node should run at all.
 	req := types.BackupRequest{Type: requested}
@@ -424,7 +437,7 @@ func ExtractChain(
 	workdir string,
 ) ([]types.ExtractedBackup, error) {
 
-	lineage, err := resolveLineage(ctx, store, metaKeyFor(cfg), leaf)
+	lineage, err := resolveLineage(ctx, store, metaPolicyFor(cfg), leaf)
 	if err != nil {
 		return nil, err
 	}
@@ -451,11 +464,11 @@ func ExtractChain(
 
 // resolveLineage reads the store's sidecars and walks ParentID links from
 // leaf back to the chain root, returning the members oldest-first.
-func resolveLineage(ctx context.Context, store interfaces.Storer, key []byte, leaf types.BackupMeta) ([]types.BackupMeta, error) {
+func resolveLineage(ctx context.Context, store interfaces.Storer, pol MetaPolicy, leaf types.BackupMeta) ([]types.BackupMeta, error) {
 	if leaf.IsChainRoot() {
 		return []types.BackupMeta{leaf}, nil
 	}
-	scan, err := ReadAllMeta(ctx, store, key)
+	scan, err := ReadAllMetaWith(ctx, store, pol)
 	if err != nil {
 		return nil, err
 	}
